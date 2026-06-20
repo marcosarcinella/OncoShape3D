@@ -2,29 +2,15 @@
 
 OncoShape3D è una piattaforma web per la morfometria tridimensionale di tumori solidi da file STL.
 
-## Funzioni attuali
+## Novità di questa versione
 
-- Upload multiplo di file STL
-- Calcolo automatico di:
-  - Volume mm3
-  - Superficie mm2
-  - Sfericita
-  - S/V mm-1
-  - Compattezza
-  - Diametro max 3D mm
-  - Asse maggiore mm
-  - Asse intermedio mm
-  - Asse minore mm
-  - Elongazione
-  - Irregolarita superficie
-  - Euler
-  - Faces
-  - Vertices
-- Download Excel
-- Download CSV
-- Sezione metodo
-- Disclaimer
-- Pagina contatti
+- Interfaccia moderna tipo dashboard
+- Logo testuale/visuale OncoShape3D
+- Menu centrale a icone
+- Layout a due colonne
+- Visualizzatore 3D STL interattivo con Plotly
+- Risultati in formato verticale
+- Download Excel/CSV
 
 ## Avvio locale
 
@@ -33,9 +19,9 @@ pip install -r requirements.txt
 streamlit run app.py
 ```
 
-## Uso online
+## Deploy
 
-Il progetto può essere pubblicato su Streamlit Community Cloud collegando questo repository GitHub.
+Caricare `app.py`, `requirements.txt` e `README.md` nel repository GitHub collegato a Streamlit Cloud.
 
 ## Nota
 
