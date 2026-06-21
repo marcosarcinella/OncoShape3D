@@ -2,6 +2,9 @@
 import io
 import math
 import struct
+import smtplib
+from email.message import EmailMessage
+
 import numpy as np
 import pandas as pd
 import streamlit as st
@@ -76,21 +79,15 @@ CUSTOM_CSS = """
     color: #334155;
     font-size: 16px;
 }
-.nav-grid {
-    display: grid;
-    grid-template-columns: repeat(5, minmax(130px, 1fr));
-    gap: 14px;
-    margin: 20px 0 26px 0;
-}
 div[data-testid="column"] .stButton button {
     width: 100%;
-    min-height: 132px;
+    min-height: 122px;
     border-radius: 18px;
     border: 1px solid #E2E8F0;
     background: white;
     color: #0F172A;
     font-weight: 800;
-    font-size: 16px;
+    font-size: 15px;
     box-shadow: 0 8px 20px rgba(15, 23, 42, 0.06);
     transition: all 0.15s ease-in-out;
 }
@@ -168,20 +165,54 @@ div[data-testid="column"] .stButton button:hover {
     color: #64748B;
     font-size: 13px;
 }
-@media (max-width: 900px) {
-    .hero {
-        flex-direction: column;
-        align-items: flex-start;
-    }
-    .title-wrap h1 {
-        font-size: 42px;
-    }
-}
 </style>
 """
 st.markdown(CUSTOM_CSS, unsafe_allow_html=True)
 
-# Navigation state
+MORPHOMETRIC_COLUMNS = [
+    "File",
+    "Volume mm3",
+    "Superficie mm2",
+    "Sfericita",
+    "S/V mm-1",
+    "Compattezza",
+    "Diametro max 3D mm",
+    "Asse maggiore mm",
+    "Asse intermedio mm",
+    "Asse minore mm",
+    "Elongazione",
+    "Irregolarita superficie",
+    "Euler",
+    "Faces",
+    "Vertices",
+]
+
+CLINICAL_COLUMNS = [
+    "Codice caso anonimo",
+    "Centro",
+    "Sede anatomica",
+    "Data intervento",
+    "Istotipo",
+    "Grading",
+    "DOI mm",
+    "WPOI",
+    "pT",
+    "pN",
+    "cN",
+    "Stadio patologico TNM",
+    "Invasione vascolare",
+    "Invasione perineurale",
+    "Invasione dotti salivari",
+    "Numero linfonodi metastatici",
+    "ENE / diffusione extracapsulare",
+    "Margini chirurgici",
+    "Recidiva locale",
+    "Recidiva regionale",
+    "Follow-up mesi",
+    "Stato ultimo follow-up",
+    "Note",
+]
+
 if "page" not in st.session_state:
     st.session_state.page = "Analisi STL"
 
@@ -324,38 +355,19 @@ def make_3d_plot(points, faces, max_faces=15000):
 
 def result_vertical_table(row):
     icons = {
-        "Volume mm3": "▣",
-        "Superficie mm2": "△",
-        "Sfericita": "◉",
-        "S/V mm-1": "↔",
-        "Compattezza": "⬢",
-        "Diametro max 3D mm": "⟷",
-        "Asse maggiore mm": "↦",
-        "Asse intermedio mm": "↔",
-        "Asse minore mm": "↤",
-        "Elongazione": "⤢",
-        "Irregolarita superficie": "≈",
-        "Euler": "χ",
-        "Faces": "F",
-        "Vertices": "V",
+        "Volume mm3": "▣", "Superficie mm2": "△", "Sfericita": "◉",
+        "S/V mm-1": "↔", "Compattezza": "⬢", "Diametro max 3D mm": "⟷",
+        "Asse maggiore mm": "↦", "Asse intermedio mm": "↔", "Asse minore mm": "↤",
+        "Elongazione": "⤢", "Irregolarita superficie": "≈",
+        "Euler": "χ", "Faces": "F", "Vertices": "V",
     }
     units = {
-        "Volume mm3": "mm³",
-        "Superficie mm2": "mm²",
-        "S/V mm-1": "mm⁻¹",
-        "Diametro max 3D mm": "mm",
-        "Asse maggiore mm": "mm",
-        "Asse intermedio mm": "mm",
-        "Asse minore mm": "mm",
+        "Volume mm3": "mm³", "Superficie mm2": "mm²", "S/V mm-1": "mm⁻¹",
+        "Diametro max 3D mm": "mm", "Asse maggiore mm": "mm",
+        "Asse intermedio mm": "mm", "Asse minore mm": "mm",
     }
-    order = [
-        "Volume mm3", "Superficie mm2", "Sfericita", "S/V mm-1", "Compattezza",
-        "Diametro max 3D mm", "Asse maggiore mm", "Asse intermedio mm",
-        "Asse minore mm", "Elongazione", "Irregolarita superficie",
-        "Euler", "Faces", "Vertices"
-    ]
     html = ""
-    for key in order:
+    for key in MORPHOMETRIC_COLUMNS[1:]:
         val = row[key]
         unit = units.get(key, "")
         value_text = f"{val} {unit}".strip()
@@ -367,6 +379,73 @@ def result_vertical_table(row):
         </div>
         """
     return html
+
+def add_empty_clinical_columns(df):
+    out = df.copy()
+    for col in CLINICAL_COLUMNS:
+        if col not in out.columns:
+            out[col] = ""
+    return out[MORPHOMETRIC_COLUMNS + CLINICAL_COLUMNS]
+
+def make_excel_bytes(df):
+    excel_buffer = io.BytesIO()
+    with pd.ExcelWriter(excel_buffer, engine="openpyxl") as writer:
+        df.to_excel(writer, index=False, sheet_name="OncoShape3D Database")
+        ws = writer.book["OncoShape3D Database"]
+        ws.freeze_panes = "A2"
+        for col in ws.columns:
+            max_length = min(max(len(str(cell.value)) if cell.value is not None else 0 for cell in col) + 2, 34)
+            ws.column_dimensions[col[0].column_letter].width = max_length
+    return excel_buffer.getvalue()
+
+def get_secret(name, default=None):
+    try:
+        return st.secrets[name]
+    except Exception:
+        return default
+
+def send_excel_by_email(uploaded_file, sender_name, sender_email, notes):
+    smtp_host = get_secret("SMTP_HOST")
+    smtp_port = int(get_secret("SMTP_PORT", 587))
+    smtp_user = get_secret("SMTP_USER")
+    smtp_password = get_secret("SMTP_PASSWORD")
+    email_to = get_secret("EMAIL_TO", "oncoshape3d@gmail.com")
+
+    if not smtp_host or not smtp_user or not smtp_password:
+        raise RuntimeError(
+            "SMTP non configurato. Inserire SMTP_HOST, SMTP_PORT, SMTP_USER, SMTP_PASSWORD ed EMAIL_TO nei Secrets di Streamlit Cloud."
+        )
+
+    file_bytes = uploaded_file.getvalue()
+
+    msg = EmailMessage()
+    msg["Subject"] = "Nuovo database clinico OncoShape3D"
+    msg["From"] = smtp_user
+    msg["To"] = email_to
+
+    body = f"""
+Nuovo file Excel caricato su OncoShape3D.
+
+Nome utente/centro: {sender_name or "Non specificato"}
+Email mittente: {sender_email or "Non specificata"}
+
+Note:
+{notes or "Nessuna nota"}
+
+File allegato: {uploaded_file.name}
+"""
+    msg.set_content(body)
+    msg.add_attachment(
+        file_bytes,
+        maintype="application",
+        subtype="vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        filename=uploaded_file.name,
+    )
+
+    with smtplib.SMTP(smtp_host, smtp_port) as server:
+        server.starttls()
+        server.login(smtp_user, smtp_password)
+        server.send_message(msg)
 
 # Header
 st.markdown(
@@ -395,11 +474,12 @@ st.markdown(
     unsafe_allow_html=True
 )
 
-# Real clickable navigation
-cols = st.columns(5)
+# Navigation
+cols = st.columns(6)
 nav_items = [
     ("🏠\n\nHome", "Home"),
     ("☁️\n\nAnalisi STL", "Analisi STL"),
+    ("📤\n\nUpload", "Upload"),
     ("🔬\n\nMetodo", "Metodo"),
     ("🛡️\n\nDisclaimer", "Disclaimer"),
     ("✉️\n\nContatti", "Contatti"),
@@ -411,7 +491,6 @@ for col, (label, page_name) in zip(cols, nav_items):
 
 st.divider()
 
-# Pages
 if st.session_state.page == "Home":
     st.markdown('<div class="panel"><h2>Home</h2>', unsafe_allow_html=True)
     st.write(
@@ -419,19 +498,14 @@ if st.session_state.page == "Home":
         **OncoShape3D** è una piattaforma di morfometria tridimensionale pensata per trasformare
         i modelli STL di tumori solidi in parametri numerici oggettivi e riproducibili.
 
-        L'obiettivo è affiancare ai dati clinico-patologici tradizionali una descrizione quantitativa
-        della forma 3D, della superficie e della complessità morfologica della neoplasia.
+        Il workflow è semplice:
+        1. caricare uno o più STL;
+        2. scaricare il file Excel con indici 3D e colonne cliniche vuote;
+        3. compilare le colonne cliniche offline;
+        4. ricaricare l'Excel compilato nella sezione **Upload** per inviarlo al database di ricerca.
         """
     )
     st.markdown("</div>", unsafe_allow_html=True)
-
-    c1, c2, c3 = st.columns(3)
-    with c1:
-        st.markdown('<div class="info-card"><h3>Dimensione</h3>Volume, superficie, diametro massimo e assi principali descrivono quanto è estesa la lesione.</div>', unsafe_allow_html=True)
-    with c2:
-        st.markdown('<div class="info-card"><h3>Forma</h3>Sfericità, compattezza, elongazione e irregolarità descrivono come il tumore cresce nello spazio.</div>', unsafe_allow_html=True)
-    with c3:
-        st.markdown('<div class="info-card"><h3>Ricerca</h3>Gli indici possono essere correlati a DOI, WPOI, grading, pT, pN, ENE e outcome clinici.</div>', unsafe_allow_html=True)
 
 elif st.session_state.page == "Analisi STL":
     left, right = st.columns([0.95, 1.05], gap="large")
@@ -481,37 +555,39 @@ elif st.session_state.page == "Analisi STL":
             st.info("Carica un file STL per visualizzare il modello 3D.")
 
     if results:
-        df = pd.DataFrame(results)
-        with results_placeholder.container():
-            st.success(f"Analisi completata: {len(df)} file elaborati correttamente.")
+        morph_df = pd.DataFrame(results)
+        full_df = add_empty_clinical_columns(morph_df)
 
-            if len(df) == 1:
-                st.markdown(result_vertical_table(df.iloc[0]), unsafe_allow_html=True)
+        with results_placeholder.container():
+            st.success(f"Analisi completata: {len(morph_df)} file elaborati correttamente.")
+
+            if len(morph_df) == 1:
+                st.markdown(result_vertical_table(morph_df.iloc[0]), unsafe_allow_html=True)
             else:
-                selected_file = st.selectbox("Seleziona file da visualizzare", df["File"].tolist())
-                row = df[df["File"] == selected_file].iloc[0]
+                selected_file = st.selectbox("Seleziona file da visualizzare", morph_df["File"].tolist())
+                row = morph_df[morph_df["File"] == selected_file].iloc[0]
                 st.markdown(result_vertical_table(row), unsafe_allow_html=True)
                 with st.expander("Tabella completa per tutti i file"):
-                    st.dataframe(df, use_container_width=True)
+                    st.dataframe(full_df, use_container_width=True)
 
-            excel_buffer = io.BytesIO()
-            with pd.ExcelWriter(excel_buffer, engine="openpyxl") as writer:
-                df.to_excel(writer, index=False, sheet_name="Parametri STL")
+            st.info("Il file Excel contiene anche colonne cliniche vuote da compilare offline.")
+
+            excel_bytes = make_excel_bytes(full_df)
 
             c1, c2 = st.columns(2)
             with c1:
                 st.download_button(
-                    "📗 Esporta Excel",
-                    data=excel_buffer.getvalue(),
-                    file_name="OncoShape3D_parametri_STL.xlsx",
+                    "📗 Esporta Excel con modulo clinico",
+                    data=excel_bytes,
+                    file_name="OncoShape3D_database_template.xlsx",
                     mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                     use_container_width=True
                 )
             with c2:
                 st.download_button(
                     "📘 Esporta CSV",
-                    data=df.to_csv(index=False).encode("utf-8"),
-                    file_name="OncoShape3D_parametri_STL.csv",
+                    data=full_df.to_csv(index=False).encode("utf-8"),
+                    file_name="OncoShape3D_database_template.csv",
                     mime="text/csv",
                     use_container_width=True
                 )
@@ -523,6 +599,42 @@ elif st.session_state.page == "Analisi STL":
     if errors:
         st.warning("Alcuni file non sono stati elaborati.")
         st.dataframe(pd.DataFrame(errors), use_container_width=True)
+
+elif st.session_state.page == "Upload":
+    st.markdown('<div class="panel"><h2>Upload database clinico</h2>', unsafe_allow_html=True)
+    st.write(
+        """
+        Dopo aver scaricato il file Excel dalla sezione **Analisi STL**, compila le colonne cliniche vuote
+        e ricarica qui il file aggiornato. Il file verrà inviato all'indirizzo del progetto:
+        **oncoshape3d@gmail.com**.
+        """
+    )
+
+    sender_name = st.text_input("Nome / Centro / Gruppo di ricerca")
+    sender_email = st.text_input("Email di contatto")
+    notes = st.text_area("Note opzionali")
+    uploaded_excel = st.file_uploader("Carica file Excel compilato", type=["xlsx"])
+
+    if uploaded_excel is not None:
+        try:
+            preview_df = pd.read_excel(uploaded_excel)
+            st.success("File Excel letto correttamente.")
+            st.dataframe(preview_df.head(20), use_container_width=True)
+        except Exception as e:
+            st.error(f"Non riesco a leggere il file Excel: {e}")
+
+        if st.button("📤 Invia file a OncoShape3D", use_container_width=True):
+            try:
+                send_excel_by_email(uploaded_excel, sender_name, sender_email, notes)
+                st.success("File inviato correttamente a oncoshape3d@gmail.com.")
+            except Exception as e:
+                st.error(str(e))
+                st.info(
+                    "Per abilitare l'invio email su Streamlit Cloud devi configurare i Secrets SMTP "
+                    "nella dashboard dell'app."
+                )
+
+    st.markdown("</div>", unsafe_allow_html=True)
 
 elif st.session_state.page == "Metodo":
     st.markdown('<div class="panel"><h2>Metodo</h2>', unsafe_allow_html=True)
@@ -537,11 +649,11 @@ elif st.session_state.page == "Metodo":
     st.write("- Volume\n- Superficie\n- Diametro massimo 3D\n- Assi principali")
     st.markdown("### Parametri morfologici")
     st.write("- Sfericità\n- Compattezza\n- Rapporto superficie/volume\n- Elongazione\n- Irregolarità di superficie")
-    st.markdown("### Requisiti tecnici")
+    st.markdown("### Modulo clinico")
     st.write(
         """
-        Gli STL dovrebbero essere in millimetri, rappresentare esclusivamente il volume di interesse
-        ed essere preferibilmente mesh chiuse/watertight.
+        Il file Excel esportato include colonne cliniche vuote che l'utente può compilare offline.
+        Una volta completato, il file può essere ricaricato nella sezione Upload per inviarlo al database del progetto.
         """
     )
     st.markdown("</div>", unsafe_allow_html=True)
@@ -558,8 +670,7 @@ elif st.session_state.page == "Disclaimer":
     st.write(
         """
         I risultati devono essere interpretati da personale qualificato e sempre integrati con dati
-        clinici, radiologici e istopatologici. L'accuratezza dei parametri dipende dalla qualità
-        della segmentazione, dalla correttezza del file STL e dalla chiusura della mesh.
+        clinici, radiologici e istopatologici.
         """
     )
     st.markdown("### Privacy")
@@ -579,24 +690,15 @@ elif st.session_state.page == "Contatti":
         tridimensionale dei tumori solidi da modelli STL.
         """
     )
-    st.markdown("### Sviluppi futuri")
-    st.write(
-        """
-        - Report PDF automatico
-        - Modulo clinico-patologico
-        - Database multicentrico anonimizzato
-        - Score morfometrico di rischio
-        """
-    )
-    st.markdown("### Email")
-    st.write("Inserire qui email istituzionale o riferimento del gruppo di ricerca.")
+    st.markdown("### Email progetto")
+    st.write("oncoshape3d@gmail.com")
     st.markdown("</div>", unsafe_allow_html=True)
 
 st.markdown(
     """
     <div class="note-box">
         <b>Nota importante.</b><br>
-        Gli STL devono essere anonimizzati e preferibilmente espressi in millimetri.
+        Gli STL e i database Excel devono essere anonimizzati.
         OncoShape3D è destinato a uso di ricerca.
     </div>
     """,
@@ -608,7 +710,7 @@ st.markdown(
     <div class="footer">
         <div><b>OncoShape3D</b><br>3D Tumor Morphometry Platform</div>
         <div>Research Use Only</div>
-        <div>Contatti: inserire email istituzionale</div>
+        <div>Contatti: oncoshape3d@gmail.com</div>
     </div>
     """,
     unsafe_allow_html=True
