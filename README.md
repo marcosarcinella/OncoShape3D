@@ -1,36 +1,23 @@
 # OncoShape3D
 
-Versione con modulo clinico e upload database.
+Versione aggiornata con **Morphometric Infiltration Score (MIS)**.
 
-## Funzioni
+## Novità
 
-- Analisi STL
-- Visualizzatore 3D
-- Export Excel con colonne cliniche vuote
-- Nuova pagina Upload
-- Invio del file Excel compilato a oncoshape3d@gmail.com tramite SMTP configurato nei Secrets Streamlit
+- Calcolo automatico del MIS
+- MIS inserito come primo risultato evidenziato
+- MIS esportato nel file Excel
+- Categorie esplorative:
+  - < 4.0 = Basso
+  - 4.0–6.5 = Intermedio
+  - ≥ 6.5 = Alto
 
-## Secrets necessari su Streamlit Cloud
+## Formula
 
-Nel menu della tua app Streamlit Cloud vai su:
+MIS = z(Sfericità) + z(Compattezza) - z(Irregolarità superficie)
 
-Settings → Secrets
+Lo score è normalizzato in scala 0–10 usando le costanti del dataset OncoShape3D attuale.
 
-e inserisci:
+## Nota
 
-```toml
-SMTP_HOST = "smtp.gmail.com"
-SMTP_PORT = 587
-SMTP_USER = "oncoshape3d@gmail.com"
-SMTP_PASSWORD = "INSERISCI_APP_PASSWORD_GMAIL"
-EMAIL_TO = "oncoshape3d@gmail.com"
-```
-
-Per Gmail serve una App Password, non la password normale dell'account.
-
-## Avvio locale
-
-```bash
-pip install -r requirements.txt
-streamlit run app.py
-```
+Il MIS è uno score esplorativo di ricerca, non un dispositivo medico e non sostituisce la diagnosi istopatologica.

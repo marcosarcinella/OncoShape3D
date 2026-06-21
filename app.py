@@ -165,12 +165,46 @@ div[data-testid="column"] .stButton button:hover {
     color: #64748B;
     font-size: 13px;
 }
+
+.mis-card {
+    padding: 18px 20px;
+    border-radius: 20px;
+    background: linear-gradient(135deg, #0F766E 0%, #14B8A6 100%);
+    color: white;
+    box-shadow: 0 14px 30px rgba(15, 118, 110, 0.22);
+    margin-bottom: 16px;
+}
+.mis-title {
+    font-size: 15px;
+    font-weight: 700;
+    opacity: 0.95;
+}
+.mis-value {
+    font-size: 42px;
+    line-height: 1.1;
+    font-weight: 900;
+    margin-top: 4px;
+}
+.mis-category {
+    font-size: 18px;
+    font-weight: 800;
+    margin-top: 4px;
+}
+.mis-caption {
+    font-size: 12px;
+    opacity: 0.9;
+    margin-top: 8px;
+}
+
 </style>
 """
 st.markdown(CUSTOM_CSS, unsafe_allow_html=True)
 
 MORPHOMETRIC_COLUMNS = [
     "File",
+    "MIS 0-10",
+    "MIS categoria",
+    "MIS raw",
     "Volume mm3",
     "Superficie mm2",
     "Sfericita",
@@ -188,51 +222,54 @@ MORPHOMETRIC_COLUMNS = [
 ]
 
 CLINICAL_COLUMNS = [
-    "Codice caso anonimo",
-    "Centro",
-
     "Sesso",
     "Eta",
-
     "Comorbilita",
-
     "Sede del tumore",
-
     "Data di intervento",
     "Tipo di intervento",
-
     "Stadiazione clinica linfonodale pre-chirurgia",
-
-    "Istologico (TNM)",
+    "Istologico(TNM)",
     "Grading",
-
     "DOI",
-
     "WPOI",
-
     "Infiltrazione vasale",
-    "Infiltrazione perineurale",
+    "Infiltrazone perineurale",
     "Infiltrazione dei dotti salivari",
-
     "Numero di Linfonodi coinvolti da metastasi",
-
     "Diffusione extracapsulare",
-
     "Dimensione del deposito metastatico maggiore",
-
     "Terapie adiuvanti",
-
-    "Margine chirurgico minimo (mm)",
-
-    "Recidiva locale",
-    "Recidiva regionale",
-
-    "Metastasi a distanza",
-
-    "Stato ultimo follow-up",
-
-    "Mesi di follow-up"
+    "Follow-up",
 ]
+
+# Morphometric Infiltration Score (MIS)
+# Standardizzazione derivata dal dataset OncoShape3D attuale.
+MIS_SPHERICITY_MEAN = 0.742230263158
+MIS_SPHERICITY_SD = 0.088976408789
+MIS_COMPACTNESS_MEAN = 0.426293073313
+MIS_COMPACTNESS_SD = 0.144267498009
+MIS_IRREGULARITY_MEAN = 1.368220812564
+MIS_IRREGULARITY_SD = 0.176490570269
+MIS_RAW_MIN = -6.765883001699
+MIS_RAW_MAX = 6.323685017374
+
+def compute_mis(sphericity, compactness, irregularity):
+    raw_score = (
+        (sphericity - MIS_SPHERICITY_MEAN) / MIS_SPHERICITY_SD
+        + (compactness - MIS_COMPACTNESS_MEAN) / MIS_COMPACTNESS_SD
+        - (irregularity - MIS_IRREGULARITY_MEAN) / MIS_IRREGULARITY_SD
+    )
+    mis_0_10 = 10 * (raw_score - MIS_RAW_MIN) / (MIS_RAW_MAX - MIS_RAW_MIN)
+    mis_0_10 = max(0, min(10, mis_0_10))
+    if mis_0_10 < 4.0:
+        category = "Basso"
+    elif mis_0_10 < 6.5:
+        category = "Intermedio"
+    else:
+        category = "Alto"
+    return round(raw_score, 4), round(mis_0_10, 2), category
+
 
 if "page" not in st.session_state:
     st.session_state.page = "Analisi STL"
@@ -296,6 +333,7 @@ def compute_metrics(filename, file_bytes):
     sv_ratio = surface / volume
     compactness = sphericity ** 3
     irregularity = surface / equivalent_sphere_surface
+    mis_raw, mis_0_10, mis_category = compute_mis(sphericity, compactness, irregularity)
 
     points_unique, face_idx, vertices, faces, euler = mesh_topology(tris)
 
@@ -319,6 +357,9 @@ def compute_metrics(filename, file_bytes):
 
     metrics = {
         "File": filename,
+        "MIS 0-10": mis_0_10,
+        "MIS categoria": mis_category,
+        "MIS raw": mis_raw,
         "Volume mm3": round(volume, 2),
         "Superficie mm2": round(surface, 2),
         "Sfericita": round(sphericity, 4),
@@ -387,8 +428,15 @@ def result_vertical_table(row):
         "Diametro max 3D mm": "mm", "Asse maggiore mm": "mm",
         "Asse intermedio mm": "mm", "Asse minore mm": "mm",
     }
-    html = ""
-    for key in MORPHOMETRIC_COLUMNS[1:]:
+    html = f"""
+    <div class="mis-card">
+        <div class="mis-title">Morphometric Infiltration Score</div>
+        <div class="mis-value">{row["MIS 0-10"]}/10</div>
+        <div class="mis-category">Profilo morfometrico: {row["MIS categoria"]}</div>
+        <div class="mis-caption">Score esplorativo basato su sfericità, compattezza e irregolarità di superficie.</div>
+    </div>
+    """
+    for key in MORPHOMETRIC_COLUMNS[4:]:
         val = row[key]
         unit = units.get(key, "")
         value_text = f"{val} {unit}".strip()
@@ -495,7 +543,6 @@ st.markdown(
     unsafe_allow_html=True
 )
 
-# Navigation
 cols = st.columns(6)
 nav_items = [
     ("🏠\n\nHome", "Home"),
@@ -670,6 +717,19 @@ elif st.session_state.page == "Metodo":
     st.write("- Volume\n- Superficie\n- Diametro massimo 3D\n- Assi principali")
     st.markdown("### Parametri morfologici")
     st.write("- Sfericità\n- Compattezza\n- Rapporto superficie/volume\n- Elongazione\n- Irregolarità di superficie")
+
+    st.markdown("### Morphometric Infiltration Score (MIS)")
+    st.write(
+        """
+        Il MIS è uno score esplorativo 0-10 calcolato combinando sfericità, compattezza e irregolarità di superficie:
+
+        MIS = z(Sfericità) + z(Compattezza) - z(Irregolarità superficie)
+
+        Valori più elevati indicano un profilo morfometrico più sferico, compatto e meno irregolare,
+        che nel dataset OncoShape3D è risultato associato a WPOI più elevato. Lo score è destinato a uso di ricerca
+        e non sostituisce la valutazione istopatologica.
+        """
+    )
     st.markdown("### Modulo clinico")
     st.write(
         """
