@@ -190,27 +190,48 @@ MORPHOMETRIC_COLUMNS = [
 CLINICAL_COLUMNS = [
     "Codice caso anonimo",
     "Centro",
-    "Sede anatomica",
-    "Data intervento",
-    "Istotipo",
+
+    "Sesso",
+    "Eta",
+
+    "Comorbilita",
+
+    "Sede del tumore",
+
+    "Data di intervento",
+    "Tipo di intervento",
+
+    "Stadiazione clinica linfonodale pre-chirurgia",
+
+    "Istologico (TNM)",
     "Grading",
-    "DOI mm",
+
+    "DOI",
+
     "WPOI",
-    "pT",
-    "pN",
-    "cN",
-    "Stadio patologico TNM",
-    "Invasione vascolare",
-    "Invasione perineurale",
-    "Invasione dotti salivari",
-    "Numero linfonodi metastatici",
-    "ENE / diffusione extracapsulare",
-    "Margini chirurgici",
+
+    "Infiltrazione vasale",
+    "Infiltrazione perineurale",
+    "Infiltrazione dei dotti salivari",
+
+    "Numero di Linfonodi coinvolti da metastasi",
+
+    "Diffusione extracapsulare",
+
+    "Dimensione del deposito metastatico maggiore",
+
+    "Terapie adiuvanti",
+
+    "Margine chirurgico minimo (mm)",
+
     "Recidiva locale",
     "Recidiva regionale",
-    "Follow-up mesi",
+
+    "Metastasi a distanza",
+
     "Stato ultimo follow-up",
-    "Note",
+
+    "Mesi di follow-up"
 ]
 
 if "page" not in st.session_state:
