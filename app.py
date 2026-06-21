@@ -428,25 +428,27 @@ def result_vertical_table(row):
         "Diametro max 3D mm": "mm", "Asse maggiore mm": "mm",
         "Asse intermedio mm": "mm", "Asse minore mm": "mm",
     }
-    html = f"""
-    <div class="mis-card">
-        <div class="mis-title">Morphometric Infiltration Score</div>
-        <div class="mis-value">{row["MIS 0-10"]}/10</div>
-        <div class="mis-category">Profilo morfometrico: {row["MIS categoria"]}</div>
-        <div class="mis-caption">Score esplorativo basato su sfericità, compattezza e irregolarità di superficie.</div>
-    </div>
-    """
+
+    html = (
+        f'<div class="mis-card">'
+        f'<div class="mis-title">Morphometric Infiltration Score</div>'
+        f'<div class="mis-value">{row["MIS 0-10"]}/10</div>'
+        f'<div class="mis-category">Profilo morfometrico: {row["MIS categoria"]}</div>'
+        f'<div class="mis-caption">Score esplorativo basato su sfericità, compattezza e irregolarità di superficie.</div>'
+        f'</div>'
+    )
+
     for key in MORPHOMETRIC_COLUMNS[4:]:
         val = row[key]
         unit = units.get(key, "")
         value_text = f"{val} {unit}".strip()
-        html += f"""
-        <div class="result-row">
-            <div class="result-icon">{icons.get(key, "•")}</div>
-            <div class="result-name">{key}</div>
-            <div class="result-value">{value_text}</div>
-        </div>
-        """
+        html += (
+            f'<div class="result-row">'
+            f'<div class="result-icon">{icons.get(key, "•")}</div>'
+            f'<div class="result-name">{key}</div>'
+            f'<div class="result-value">{value_text}</div>'
+            f'</div>'
+        )
     return html
 
 def add_empty_clinical_columns(df):

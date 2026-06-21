@@ -21,3 +21,7 @@ Lo score è normalizzato in scala 0–10 usando le costanti del dataset OncoShap
 ## Nota
 
 Il MIS è uno score esplorativo di ricerca, non un dispositivo medico e non sostituisce la diagnosi istopatologica.
+
+
+## Fix
+Correzione visualizzazione risultati: HTML non più mostrato come testo.
