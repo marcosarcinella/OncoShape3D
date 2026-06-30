@@ -243,16 +243,32 @@ CLINICAL_COLUMNS = [
     "Follow-up",
 ]
 
-# Morphometric Infiltration Score (MIS)
-# Standardizzazione derivata dal dataset OncoShape3D attuale.
-MIS_SPHERICITY_MEAN = 0.742230263158
-MIS_SPHERICITY_SD = 0.088976408789
-MIS_COMPACTNESS_MEAN = 0.426293073313
-MIS_COMPACTNESS_SD = 0.144267498009
-MIS_IRREGULARITY_MEAN = 1.368220812564
-MIS_IRREGULARITY_SD = 0.176490570269
-MIS_RAW_MIN = -6.765883001699
-MIS_RAW_MAX = 6.323685017374
+# Morphometric Infiltration Score (3D-MIS)
+# Standardizzazione derivata dal database definitivo OncoShape3D.
+# FORMULE UFFICIALI:
+# - Sfericità = pi^(1/3) * (6V)^(2/3) / A
+# - Compattezza OBB = V_tumore / V_OBB
+# - Irregolarità Hull = A_mesh / A_convex_hull - 1
+MIS_SPHERICITY_MEAN = 0.7422302632
+MIS_SPHERICITY_SD = 0.0895676207
+
+MIS_COMPACTNESS_MEAN = 0.3854940828
+MIS_COMPACTNESS_SD = 0.0810311385
+
+MIS_IRREGULARITY_MEAN = 0.0054463749
+MIS_IRREGULARITY_SD = 0.2770848004
+
+# Min e max del 3D-MIS raw nel database definitivo.
+# Servono solo per visualizzare lo score normalizzato 0-10.
+MIS_RAW_MIN = -3.6279580719
+MIS_RAW_MAX = 3.0348555298
+
+# Modello logistico definitivo per rischio WPOI alto 4-5.
+# Score = beta0 + beta_grading * G + beta_mis * 3D-MIS raw
+WPOI_BETA0 = -4.832
+WPOI_BETA_GRADING = 1.717
+WPOI_BETA_3DMIS = 0.589
+
 
 def compute_mis(sphericity, compactness, irregularity):
     raw_score = (
@@ -269,6 +285,56 @@ def compute_mis(sphericity, compactness, irregularity):
     else:
         category = "Alto"
     return round(raw_score, 4), round(mis_0_10, 2), category
+
+def predict_wpoi_risk(grading, mis_raw):
+    """
+    Calcola la probabilità stimata di WPOI elevato (4-5)
+    usando il modello logistico finale Grading + 3D-MIS.
+
+    grading:
+        1 = G1
+        2 = G2
+        3 = G3
+
+    mis_raw:
+        3D-MIS raw calcolato con formule ufficiali OncoShape3D.
+    """
+    if grading not in [1, 2, 3]:
+        raise ValueError("Il grading deve essere 1=G1, 2=G2 oppure 3=G3.")
+
+    score = WPOI_BETA0 + WPOI_BETA_GRADING * grading + WPOI_BETA_3DMIS * mis_raw
+    probability = 1 / (1 + math.exp(-score))
+
+    if probability < 0.30:
+        risk_class = "Basso rischio"
+        risk_icon = "🟢"
+        risk_comment = (
+            "Il modello stima una bassa probabilità di WPOI elevato. "
+            "Il risultato deve comunque essere integrato con valutazione clinica, imaging e istologia."
+        )
+    elif probability < 0.60:
+        risk_class = "Rischio intermedio"
+        risk_icon = "🟡"
+        risk_comment = (
+            "Il modello stima una probabilità intermedia di WPOI elevato. "
+            "È indicata una valutazione multidisciplinare del caso."
+        )
+    else:
+        risk_class = "Alto rischio"
+        risk_icon = "🔴"
+        risk_comment = (
+            "Il modello stima un'elevata probabilità di WPOI 4-5. "
+            "È consigliata particolare attenzione nella pianificazione chirurgica e nella discussione multidisciplinare."
+        )
+
+    return {
+        "score": round(score, 4),
+        "probability": probability,
+        "probability_percent": round(probability * 100, 1),
+        "risk_class": risk_class,
+        "risk_icon": risk_icon,
+        "risk_comment": risk_comment,
+    }
 
 
 if "page" not in st.session_state:
@@ -328,27 +394,45 @@ def compute_metrics(filename, file_bytes):
     if surface <= 0 or volume <= 0:
         raise ValueError("Volume o superficie non validi. Controllare che la mesh sia chiusa.")
 
-    equivalent_sphere_surface = math.pi ** (1 / 3) * (6 * volume) ** (2 / 3)
-    sphericity = equivalent_sphere_surface / surface
-    sv_ratio = surface / volume
-    compactness = sphericity ** 3
-    irregularity = surface / equivalent_sphere_surface
-    mis_raw, mis_0_10, mis_category = compute_mis(sphericity, compactness, irregularity)
-
     points_unique, face_idx, vertices, faces, euler = mesh_topology(tris)
 
-    hull = ConvexHull(points_unique)
-    hull_points = points_unique[hull.vertices]
-    if len(hull_points) > 5000:
-        idx = np.linspace(0, len(hull_points) - 1, 5000).astype(int)
-        hull_points = hull_points[idx]
-    max_diameter = float(distance.pdist(hull_points).max())
+    # ------------------------------------------------------------
+    # PARAMETRI MORFOMETRICI UFFICIALI ONCOSHAPE3D
+    # ------------------------------------------------------------
 
+    # 1. Sfericità standard
+    equivalent_sphere_surface = math.pi ** (1 / 3) * (6 * volume) ** (2 / 3)
+    sphericity = equivalent_sphere_surface / surface
+
+    # 2. Rapporto superficie/volume
+    sv_ratio = surface / volume
+
+    # 3. Compattezza ufficiale:
+    #    Compactness = Volume tumore / Volume della Minimum Oriented Bounding Box
     centered = points_unique - points_unique.mean(axis=0)
     eigvals, eigvecs = np.linalg.eigh(np.cov(centered.T))
     eigvecs = eigvecs[:, np.argsort(eigvals)[::-1]]
     projected = centered @ eigvecs
     extents = projected.max(axis=0) - projected.min(axis=0)
+
+    obb_volume = float(extents[0] * extents[1] * extents[2])
+    compactness = volume / obb_volume if obb_volume > 0 else np.nan
+
+    # 4. Irregolarità ufficiale:
+    #    Irregularity = Superficie mesh / Superficie convex hull - 1
+    hull = ConvexHull(points_unique)
+    hull_surface = float(hull.area)
+    irregularity = (surface / hull_surface) - 1 if hull_surface > 0 else np.nan
+
+    # 5. 3D-MIS ufficiale:
+    #    3D-MIS = z(Sfericità) + z(Compattezza) - z(Irregolarità)
+    mis_raw, mis_0_10, mis_category = compute_mis(sphericity, compactness, irregularity)
+
+    hull_points = points_unique[hull.vertices]
+    if len(hull_points) > 5000:
+        idx = np.linspace(0, len(hull_points) - 1, 5000).astype(int)
+        hull_points = hull_points[idx]
+    max_diameter = float(distance.pdist(hull_points).max())
 
     major_axis = float(extents[0])
     intermediate_axis = float(extents[1])
@@ -434,7 +518,7 @@ def result_vertical_table(row):
         f'<div class="mis-title">Morphometric Infiltration Score</div>'
         f'<div class="mis-value">{row["MIS 0-10"]}/10</div>'
         f'<div class="mis-category">Profilo morfometrico: {row["MIS categoria"]}</div>'
-        f'<div class="mis-caption">Score esplorativo basato su sfericità, compattezza e irregolarità di superficie.</div>'
+        f'<div class="mis-caption">Score basato su sfericità, compattezza OBB e irregolarità rispetto al convex hull.</div>'
         f'</div>'
     )
 
@@ -632,11 +716,49 @@ elif st.session_state.page == "Analisi STL":
             st.success(f"Analisi completata: {len(morph_df)} file elaborati correttamente.")
 
             if len(morph_df) == 1:
-                st.markdown(result_vertical_table(morph_df.iloc[0]), unsafe_allow_html=True)
+                row = morph_df.iloc[0]
+                st.markdown(result_vertical_table(row), unsafe_allow_html=True)
+
+                st.markdown("### Predizione rischio WPOI")
+                grading_label = st.selectbox(
+                    "Grading bioptico",
+                    ["G1", "G2", "G3"],
+                    key="grading_single"
+                )
+                grading = {"G1": 1, "G2": 2, "G3": 3}[grading_label]
+
+                if st.button("Calcola rischio WPOI 4–5", key="risk_single", use_container_width=True):
+                    prediction = predict_wpoi_risk(grading, float(row["MIS raw"]))
+                    st.metric(
+                        "Probabilità stimata WPOI 4–5",
+                        f"{prediction['probability_percent']}%"
+                    )
+                    st.markdown(f"## {prediction['risk_icon']} {prediction['risk_class']}")
+                    st.write(f"Score logistico: **{prediction['score']}**")
+                    st.info(prediction["risk_comment"])
             else:
                 selected_file = st.selectbox("Seleziona file da visualizzare", morph_df["File"].tolist())
                 row = morph_df[morph_df["File"] == selected_file].iloc[0]
                 st.markdown(result_vertical_table(row), unsafe_allow_html=True)
+
+                st.markdown("### Predizione rischio WPOI")
+                grading_label = st.selectbox(
+                    "Grading bioptico",
+                    ["G1", "G2", "G3"],
+                    key="grading_multi"
+                )
+                grading = {"G1": 1, "G2": 2, "G3": 3}[grading_label]
+
+                if st.button("Calcola rischio WPOI 4–5", key="risk_multi", use_container_width=True):
+                    prediction = predict_wpoi_risk(grading, float(row["MIS raw"]))
+                    st.metric(
+                        "Probabilità stimata WPOI 4–5",
+                        f"{prediction['probability_percent']}%"
+                    )
+                    st.markdown(f"## {prediction['risk_icon']} {prediction['risk_class']}")
+                    st.write(f"Score logistico: **{prediction['score']}**")
+                    st.info(prediction["risk_comment"])
+
                 with st.expander("Tabella completa per tutti i file"):
                     st.dataframe(full_df, use_container_width=True)
 
@@ -723,13 +845,17 @@ elif st.session_state.page == "Metodo":
     st.markdown("### Morphometric Infiltration Score (MIS)")
     st.write(
         """
-        Il MIS è uno score esplorativo 0-10 calcolato combinando sfericità, compattezza e irregolarità di superficie:
+        Il 3D-MIS è calcolato con le formule ufficiali validate nel database definitivo:
 
-        MIS = z(Sfericità) + z(Compattezza) - z(Irregolarità superficie)
+        - Sfericità = pi^(1/3) * (6V)^(2/3) / A
+        - Compattezza OBB = Volume tumore / Volume della minimum oriented bounding box
+        - Irregolarità Hull = Superficie mesh / Superficie del convex hull - 1
 
-        Valori più elevati indicano un profilo morfometrico più sferico, compatto e meno irregolare,
-        che nel dataset OncoShape3D è risultato associato a WPOI più elevato. Lo score è destinato a uso di ricerca
-        e non sostituisce la valutazione istopatologica.
+        3D-MIS raw = z(Sfericità) + z(Compattezza OBB) - z(Irregolarità Hull)
+
+        Nella sezione Analisi STL è inoltre disponibile un modulo sperimentale che integra 3D-MIS e grading bioptico
+        per stimare la probabilità di WPOI elevato (4-5). Il modello è destinato a uso di ricerca e non sostituisce
+        la valutazione clinico-istopatologica.
         """
     )
     st.markdown("### Modulo clinico")
