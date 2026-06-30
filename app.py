@@ -271,19 +271,29 @@ WPOI_BETA_3DMIS = 0.589
 
 
 def compute_mis(sphericity, compactness, irregularity):
-    raw_score = (
-        (sphericity - MIS_SPHERICITY_MEAN) / MIS_SPHERICITY_SD
-        + (compactness - MIS_COMPACTNESS_MEAN) / MIS_COMPACTNESS_SD
-        - (irregularity - MIS_IRREGULARITY_MEAN) / MIS_IRREGULARITY_SD
-    )
+    """
+    Calcola il 3D-MIS ufficiale:
+    3D-MIS = z(Sfericità) + z(Compattezza OBB) - z(Irregolarità Hull)
+    """
+    z_sphericity = safe_z(sphericity, MIS_SPHERICITY_MEAN, MIS_SPHERICITY_SD)
+    z_compactness = safe_z(compactness, MIS_COMPACTNESS_MEAN, MIS_COMPACTNESS_SD)
+    z_irregularity = safe_z(irregularity, MIS_IRREGULARITY_MEAN, MIS_IRREGULARITY_SD)
+
+    raw_score = z_sphericity + z_compactness - z_irregularity
+
+    if np.isnan(raw_score):
+        return np.nan, np.nan, "Non calcolabile"
+
     mis_0_10 = 10 * (raw_score - MIS_RAW_MIN) / (MIS_RAW_MAX - MIS_RAW_MIN)
     mis_0_10 = max(0, min(10, mis_0_10))
+
     if mis_0_10 < 4.0:
         category = "Basso"
     elif mis_0_10 < 6.5:
         category = "Intermedio"
     else:
         category = "Alto"
+
     return round(raw_score, 4), round(mis_0_10, 2), category
 
 def predict_wpoi_risk(grading, mis_raw):
@@ -336,6 +346,70 @@ def predict_wpoi_risk(grading, mis_raw):
         "risk_comment": risk_comment,
     }
 
+# ============================================================
+# ONCOSHAPE3D 2.0 - MOTORE MATEMATICO E MODELLO WPOI
+# ============================================================
+
+def safe_z(value, mean, sd):
+    """Calcola z-score evitando divisioni per zero o valori mancanti."""
+    if value is None or np.isnan(value) or sd == 0:
+        return np.nan
+    return (value - mean) / sd
+
+
+def format_probability_bar(probability):
+    """
+    Crea una barra visiva del rischio WPOI.
+    probability: valore tra 0 e 1.
+    """
+    pct = max(0, min(100, probability * 100))
+    if pct < 30:
+        color = "#16A34A"
+    elif pct < 60:
+        color = "#EAB308"
+    else:
+        color = "#DC2626"
+
+    return f"""
+    <div style="margin-top: 12px; margin-bottom: 16px;">
+        <div style="height: 18px; background: #E2E8F0; border-radius: 999px; overflow: hidden;">
+            <div style="height: 18px; width: {pct:.1f}%; background: {color}; border-radius: 999px;"></div>
+        </div>
+        <div style="font-size: 13px; color: #64748B; margin-top: 6px;">
+            0% &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; 30% &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; 60% &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; 100%
+        </div>
+    </div>
+    """
+
+
+def compute_official_obb(points_unique):
+    """
+    Calcola una oriented bounding box tramite PCA.
+
+    Nota metodologica:
+    questa è una stima robusta e riproducibile della OBB orientata sugli assi principali
+    della mesh. È coerente con l'approccio morfometrico usato nel progetto.
+    """
+    centered = points_unique - points_unique.mean(axis=0)
+    cov = np.cov(centered.T)
+    eigvals, eigvecs = np.linalg.eigh(cov)
+    eigvecs = eigvecs[:, np.argsort(eigvals)[::-1]]
+    projected = centered @ eigvecs
+    extents = projected.max(axis=0) - projected.min(axis=0)
+    obb_volume = float(extents[0] * extents[1] * extents[2])
+    return obb_volume, centered, eigvecs, projected, extents
+
+
+def compute_official_irregularity(surface, points_unique):
+    """
+    Calcola irregolarità ufficiale:
+    Irregularity = A_mesh / A_convex_hull - 1
+    """
+    hull = ConvexHull(points_unique)
+    hull_surface = float(hull.area)
+    irregularity = (surface / hull_surface) - 1 if hull_surface > 0 else np.nan
+    return irregularity, hull, hull_surface
+
 
 if "page" not in st.session_state:
     st.session_state.page = "Analisi STL"
@@ -384,56 +458,58 @@ def mesh_topology(tris):
     return points_unique, face_idx, vertices, faces, euler
 
 def compute_metrics(filename, file_bytes):
+    """
+    Motore matematico ufficiale OncoShape3D 2.0.
+
+    Calcola:
+    - Volume
+    - Superficie
+    - Sfericità
+    - Compattezza OBB = V_tumore / V_OBB
+    - Irregolarità Hull = A_mesh / A_convex_hull - 1
+    - 3D-MIS raw e 0-10
+    - Parametri descrittivi 3D
+    """
     tris = parse_stl(file_bytes)
 
+    # Superficie triangolare
     cross = np.cross(tris[:, 1] - tris[:, 0], tris[:, 2] - tris[:, 0])
     surface = float(0.5 * np.linalg.norm(cross, axis=1).sum())
+
+    # Volume mesh chiusa
     signed_volume = np.einsum("ij,ij->i", tris[:, 0], np.cross(tris[:, 1], tris[:, 2])) / 6.0
     volume = abs(float(signed_volume.sum()))
 
     if surface <= 0 or volume <= 0:
-        raise ValueError("Volume o superficie non validi. Controllare che la mesh sia chiusa.")
+        raise ValueError("Volume o superficie non validi. Controllare che la mesh STL sia chiusa e corretta.")
 
     points_unique, face_idx, vertices, faces, euler = mesh_topology(tris)
 
-    # ------------------------------------------------------------
-    # PARAMETRI MORFOMETRICI UFFICIALI ONCOSHAPE3D
-    # ------------------------------------------------------------
-
-    # 1. Sfericità standard
+    # 1. Sfericità ufficiale
     equivalent_sphere_surface = math.pi ** (1 / 3) * (6 * volume) ** (2 / 3)
     sphericity = equivalent_sphere_surface / surface
 
-    # 2. Rapporto superficie/volume
+    # 2. Superficie/volume
     sv_ratio = surface / volume
 
-    # 3. Compattezza ufficiale:
-    #    Compactness = Volume tumore / Volume della Minimum Oriented Bounding Box
-    centered = points_unique - points_unique.mean(axis=0)
-    eigvals, eigvecs = np.linalg.eigh(np.cov(centered.T))
-    eigvecs = eigvecs[:, np.argsort(eigvals)[::-1]]
-    projected = centered @ eigvecs
-    extents = projected.max(axis=0) - projected.min(axis=0)
-
-    obb_volume = float(extents[0] * extents[1] * extents[2])
+    # 3. Compattezza ufficiale OBB
+    obb_volume, centered, eigvecs, projected, extents = compute_official_obb(points_unique)
     compactness = volume / obb_volume if obb_volume > 0 else np.nan
 
-    # 4. Irregolarità ufficiale:
-    #    Irregularity = Superficie mesh / Superficie convex hull - 1
-    hull = ConvexHull(points_unique)
-    hull_surface = float(hull.area)
-    irregularity = (surface / hull_surface) - 1 if hull_surface > 0 else np.nan
+    # 4. Irregolarità ufficiale Hull
+    irregularity, hull, hull_surface = compute_official_irregularity(surface, points_unique)
 
-    # 5. 3D-MIS ufficiale:
-    #    3D-MIS = z(Sfericità) + z(Compattezza) - z(Irregolarità)
+    # 5. 3D-MIS ufficiale
     mis_raw, mis_0_10, mis_category = compute_mis(sphericity, compactness, irregularity)
 
+    # Diametro massimo sul convex hull
     hull_points = points_unique[hull.vertices]
     if len(hull_points) > 5000:
         idx = np.linspace(0, len(hull_points) - 1, 5000).astype(int)
         hull_points = hull_points[idx]
-    max_diameter = float(distance.pdist(hull_points).max())
+    max_diameter = float(distance.pdist(hull_points).max()) if len(hull_points) > 1 else np.nan
 
+    # Assi principali dalla PCA/OBB
     major_axis = float(extents[0])
     intermediate_axis = float(extents[1])
     minor_axis = float(extents[2])
@@ -518,7 +594,7 @@ def result_vertical_table(row):
         f'<div class="mis-title">Morphometric Infiltration Score</div>'
         f'<div class="mis-value">{row["MIS 0-10"]}/10</div>'
         f'<div class="mis-category">Profilo morfometrico: {row["MIS categoria"]}</div>'
-        f'<div class="mis-caption">Score basato su sfericità, compattezza OBB e irregolarità rispetto al convex hull.</div>'
+        f'<div class="mis-caption">Score ufficiale: z(Sfericità) + z(Compattezza OBB) - z(Irregolarità Hull).</div>'
         f'</div>'
     )
 
@@ -734,6 +810,7 @@ elif st.session_state.page == "Analisi STL":
                         f"{prediction['probability_percent']}%"
                     )
                     st.markdown(f"## {prediction['risk_icon']} {prediction['risk_class']}")
+                    st.markdown(format_probability_bar(prediction["probability"]), unsafe_allow_html=True)
                     st.write(f"Score logistico: **{prediction['score']}**")
                     st.info(prediction["risk_comment"])
             else:
@@ -756,6 +833,7 @@ elif st.session_state.page == "Analisi STL":
                         f"{prediction['probability_percent']}%"
                     )
                     st.markdown(f"## {prediction['risk_icon']} {prediction['risk_class']}")
+                    st.markdown(format_probability_bar(prediction["probability"]), unsafe_allow_html=True)
                     st.write(f"Score logistico: **{prediction['score']}**")
                     st.info(prediction["risk_comment"])
 
